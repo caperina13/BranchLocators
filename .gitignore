@@ -1,0 +1,40 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+*.dex
+*.class
+
+/bin/
+/gen/
+/out/
+
+# Build & Gradle folders
+.gradle/
+**/build/
+/build/
+app/build/
+*.navigation/
+
+# Local configuration file
+local.properties
+
+# Log Files
+*.log
+
+# Android Studio / IntelliJ IDEA
+.navigation/
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
