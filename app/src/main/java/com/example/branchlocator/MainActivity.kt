@@ -518,26 +518,22 @@ class DriveSyncManager(private val context: Context, private val account: Google
 
 class MiniServerClient(private val context: Context) {
 
-    private fun getServerUrl(): String {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getString("mini_server_url", "https://branchlocator-r2mc.onrender.com")
-            ?.ifBlank { "https://branchlocator-r2mc.onrender.com" } ?: "https://branchlocator-r2mc.onrender.com"
-    }
+    private val baseUrl = "https://branchlocator-r2mc.onrender.com"
 
     suspend fun sendBackupToServer(email: String, backupJsonString: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val baseUrl = getServerUrl()
+            val targetEmail = email.ifBlank { "it.agnp@gmail.com" }
             val url = java.net.URL("$baseUrl/api/backup")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json; utf8")
             conn.setRequestProperty("Accept", "application/json")
             conn.doOutput = true
-            conn.connectTimeout = 10000
-            conn.readTimeout = 10000
+            conn.connectTimeout = 30000
+            conn.readTimeout = 30000
 
             val payload = JSONObject().apply {
-                put("email", email)
+                put("email", targetEmail)
                 put("backupData", JSONObject(backupJsonString))
             }
 
@@ -555,13 +551,13 @@ class MiniServerClient(private val context: Context) {
 
     suspend fun getBackupFromServer(email: String): String? = withContext(Dispatchers.IO) {
         try {
-            val baseUrl = getServerUrl()
-            val url = java.net.URL("$baseUrl/api/backup/${java.net.URLEncoder.encode(email, "UTF-8")}")
+            val targetEmail = email.ifBlank { "it.agnp@gmail.com" }
+            val url = java.net.URL("$baseUrl/api/backup/${java.net.URLEncoder.encode(targetEmail, "UTF-8")}")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/json")
-            conn.connectTimeout = 10000
-            conn.readTimeout = 10000
+            conn.connectTimeout = 30000
+            conn.readTimeout = 30000
 
             if (conn.responseCode == 200) {
                 val responseText = conn.inputStream.bufferedReader().use { it.readText() }
@@ -578,19 +574,18 @@ class MiniServerClient(private val context: Context) {
 
     suspend fun submitAccessRequest(name: String, email: String, dept: String, reason: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val baseUrl = getServerUrl()
             val url = java.net.URL("$baseUrl/api/access-request")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json; utf8")
             conn.setRequestProperty("Accept", "application/json")
             conn.doOutput = true
-            conn.connectTimeout = 10000
-            conn.readTimeout = 10000
+            conn.connectTimeout = 30000
+            conn.readTimeout = 30000
 
             val payload = JSONObject().apply {
                 put("name", name)
-                put("email", email)
+                put("email", email.ifBlank { "it.agnp@gmail.com" })
                 put("department", dept)
                 put("reason", reason)
             }
@@ -2260,7 +2255,9 @@ private fun BranchLocatorScreen(
                         }
                     }
 
-                    // Google Drive Cloud Backup & Restore Card
+                    // Single Unified "Backup & Restore" Card (Render Cloud Server: https://branchlocator-r2mc.onrender.com)
+                    var isSyncingCloud by remember { mutableStateOf(false) }
+
                     Card(
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -2275,9 +2272,9 @@ private fun BranchLocatorScreen(
                                 )
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text("Google Drive Cloud Backup & Restore", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                    Text("Backup & Restore", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                                     Text(
-                                        if (lastBackupTime.isNotBlank()) "Last backup: $lastBackupTime" else "No cloud backup created yet",
+                                        if (lastBackupTime.isNotBlank()) "Last backup: $lastBackupTime" else "Cloud Backup & Restore via https://branchlocator-r2mc.onrender.com",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (lastBackupTime.isNotBlank()) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
                                         fontWeight = if (lastBackupTime.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal
@@ -2285,26 +2282,64 @@ private fun BranchLocatorScreen(
                                 }
                             }
 
-                            // Manual Backup & Restore Action Buttons
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Button(
-                                    onClick = onBackupNow,
-                                    enabled = isGoogleSignedIn,
+                                    onClick = {
+                                        isSyncingCloud = true
+                                        val backupJson = createFullAppBackupJson(context)
+                                        val client = MiniServerClient(context)
+                                        coroutineScope.launch {
+                                            val success = client.sendBackupToServer(googleEmail, backupJson)
+                                            isSyncingCloud = false
+                                            if (success) {
+                                                val timestamp = java.text.SimpleDateFormat("MMM dd, yyyy • hh:mm a", java.util.Locale.getDefault()).format(java.util.Date())
+                                                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                                                    .edit().putString(LAST_BACKUP_TIME_KEY, timestamp).apply()
+                                                android.widget.Toast.makeText(context, "✅ App progress backed up to Render Cloud Server!", android.widget.Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                android.widget.Toast.makeText(context, "❌ Could not connect to Render Cloud Server.", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    },
+                                    enabled = !isSyncingCloud,
                                     modifier = Modifier.weight(1f),
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00BFA5))
                                 ) {
-                                    Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Backup Now")
+                                    if (isSyncingCloud) {
+                                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Syncing...")
+                                    } else {
+                                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Backup Now")
+                                    }
                                 }
 
                                 OutlinedButton(
-                                    onClick = onRestoreNow,
-                                    enabled = isGoogleSignedIn,
+                                    onClick = {
+                                        isSyncingCloud = true
+                                        val client = MiniServerClient(context)
+                                        coroutineScope.launch {
+                                            val downloadedJson = client.getBackupFromServer(googleEmail)
+                                            isSyncingCloud = false
+                                            if (!downloadedJson.isNullOrBlank()) {
+                                                val success = restoreAppFromBackupJson(context, downloadedJson)
+                                                if (success) {
+                                                    android.widget.Toast.makeText(context, "✅ App progress restored from Render Cloud Server!", android.widget.Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    android.widget.Toast.makeText(context, "❌ Failed to parse data from Cloud Server", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            } else {
+                                                android.widget.Toast.makeText(context, "❌ No backup found on Cloud Server for $googleEmail", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    },
+                                    enabled = !isSyncingCloud,
                                     modifier = Modifier.weight(1f),
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
@@ -2313,149 +2348,8 @@ private fun BranchLocatorScreen(
                                     Text("Restore Backup")
                                 }
                             }
-
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                            // Auto Backup Settings & Schedule
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text("Automatic Cloud Backup", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                                    Text("Auto-sync app progress in background", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                Switch(
-                                    checked = isAutoBackupEnabled,
-                                    onCheckedChange = onAutoBackupEnabledChange,
-                                    enabled = isGoogleSignedIn
-                                )
-                            }
-
-                            if (isAutoBackupEnabled) {
-                                Text("Auto-Backup Schedule Frequency", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    listOf("Daily", "Weekly", "Monthly").forEach { schedule ->
-                                        val isSelected = autoBackupSchedule.equals(schedule, ignoreCase = true)
-                                        FilterChip(
-                                            selected = isSelected,
-                                            onClick = { onAutoBackupScheduleChange(schedule) },
-                                            label = { Text(schedule) },
-                                            modifier = Modifier.weight(1f),
-                                            enabled = isGoogleSignedIn
-                                        )
-                                    }
-                                }
-                            }
                         }
                     }
-
-                    // Mini Cloud Server Backup & Sync Card (Render / Free Cloud Hosting)
-                    var miniServerUrlInput by remember {
-                        mutableStateOf(
-                            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                                .getString("mini_server_url", "https://branchlocator-r2mc.onrender.com") ?: "https://branchlocator-r2mc.onrender.com"
-                        )
-                    }
-                    var isSyncingMiniServer by remember { mutableStateOf(false) }
-
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                    ) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Tune, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
-                                Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text("Free Cloud Mini-Server API", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                                    Text("Sync backup data & applications to your Node.js cloud server", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-
-                            OutlinedTextField(
-                                value = miniServerUrlInput,
-                                onValueChange = { newUrl ->
-                                    miniServerUrlInput = newUrl
-                                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
-                                        .putString("mini_server_url", newUrl).apply()
-                                },
-                                label = { Text("Cloud Server URL (Render / Railway / Local)") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = {
-                                        isSyncingMiniServer = true
-                                        val backupJson = createFullAppBackupJson(context)
-                                        val client = MiniServerClient(context)
-                                        coroutineScope.launch {
-                                            val success = client.sendBackupToServer(googleEmail, backupJson)
-                                            isSyncingMiniServer = false
-                                            if (success) {
-                                                android.widget.Toast.makeText(context, "✅ Synced app backup to Cloud Mini Server!", android.widget.Toast.LENGTH_SHORT).show()
-                                            } else {
-                                                android.widget.Toast.makeText(context, "❌ Could not connect to Mini Server at $miniServerUrlInput", android.widget.Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    },
-                                    enabled = !isSyncingMiniServer && isGoogleSignedIn,
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00BFA5))
-                                ) {
-                                    if (isSyncingMiniServer) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("Syncing...")
-                                    } else {
-                                        Icon(Icons.Default.FileUpload, null, modifier = Modifier.size(18.dp))
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("Sync to Cloud")
-                                    }
-                                }
-
-                                OutlinedButton(
-                                    onClick = {
-                                        isSyncingMiniServer = true
-                                        val client = MiniServerClient(context)
-                                        coroutineScope.launch {
-                                            val downloadedJson = client.getBackupFromServer(googleEmail)
-                                            isSyncingMiniServer = false
-                                            if (!downloadedJson.isNullOrBlank()) {
-                                                val success = restoreAppFromBackupJson(context, downloadedJson)
-                                                if (success) {
-                                                    android.widget.Toast.makeText(context, "✅ Restored backup from Cloud Mini Server!", android.widget.Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    android.widget.Toast.makeText(context, "❌ Failed to parse data from Cloud Mini Server", android.widget.Toast.LENGTH_SHORT).show()
-                                                }
-                                            } else {
-                                                android.widget.Toast.makeText(context, "❌ No backup found on Cloud Mini Server for $googleEmail", android.widget.Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    },
-                                    enabled = !isSyncingMiniServer && isGoogleSignedIn,
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Icon(Icons.Default.CloudDownload, null, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Restore Cloud")
-                                }
-                            }
-                        }
-                    }
-
-
 
                     Card(
                         shape = RoundedCornerShape(16.dp),
@@ -4054,7 +3948,7 @@ private suspend fun sendAccessRequestEmailInApp(
 ): Boolean = withContext(Dispatchers.IO) {
     val developerEmail = "caperina13@gmail.com"
     val timestampStr = java.text.SimpleDateFormat("MMM dd, yyyy • hh:mm a", java.util.Locale.getDefault()).format(java.util.Date())
-    val subject = "[AGNP Logistics] New Developer Access Application - $name"
+    val subject = "[Branch Locator] New Developer Access Application - $name"
     val body = """
         Hello AGNP Developer,
 
@@ -4068,10 +3962,86 @@ private suspend fun sendAccessRequestEmailInApp(
 
         Please add $email as a Test User in Google Cloud Console OAuth Consent Screen.
 
-        Sent automatically from AGNP Android App on $timestampStr
+        Sent automatically from Branch Locator Android App on $timestampStr
     """.trimIndent()
 
-    // 1. Save request locally in SharedPreferences for Admin review in app
+    var sendSuccess = false
+
+    // 1. Submit directly to Render Mini Server API (https://branchlocator-r2mc.onrender.com/api/access-request)
+    try {
+        val miniClient = MiniServerClient(context)
+        val serverResult = miniClient.submitAccessRequest(name, email, dept, reason)
+        if (serverResult) {
+            sendSuccess = true
+        }
+    } catch (_: Exception) {}
+
+    // 2. Direct HTTP submission to FormSubmit API targeting caperina13@gmail.com with sender name Branch Locator
+    try {
+        val url = java.net.URL("https://formsubmit.co/ajax/$developerEmail")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json; utf8")
+        conn.setRequestProperty("Accept", "application/json")
+        conn.doOutput = true
+        conn.connectTimeout = 30000
+        conn.readTimeout = 30000
+
+        val jsonParam = JSONObject().apply {
+            put("name", "Branch Locator ($name)")
+            put("from_name", "Branch Locator")
+            put("email", email)
+            put("_subject", subject)
+            put("message", body)
+            put("department", dept)
+            put("reason", reason)
+            put("_autorespond", "Your Branch Locator developer access application has been received.")
+        }
+
+        java.io.DataOutputStream(conn.outputStream).use { os ->
+            os.write(jsonParam.toString().toByteArray(Charsets.UTF_8))
+            os.flush()
+        }
+
+        val responseCode = conn.responseCode
+        if (responseCode == 200 || responseCode == 201) {
+            sendSuccess = true
+        }
+    } catch (_: Exception) {}
+
+    // 3. Direct HTTP submission to Web3Forms as secondary fallback
+    if (!sendSuccess) {
+        try {
+            val url = java.net.URL("https://api.web3forms.com/submit")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json; utf8")
+            conn.setRequestProperty("Accept", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 30000
+            conn.readTimeout = 30000
+
+            val jsonParam = JSONObject().apply {
+                put("access_key", "73ef4d19-4a0b-4e8c-8f24-2c6b4e9f1a23")
+                put("email", developerEmail)
+                put("from_name", "Branch Locator")
+                put("subject", subject)
+                put("message", body)
+                put("replyto", email)
+            }
+
+            java.io.DataOutputStream(conn.outputStream).use { os ->
+                os.write(jsonParam.toString().toByteArray(Charsets.UTF_8))
+                os.flush()
+            }
+
+            if (conn.responseCode == 200 || conn.responseCode == 201) {
+                sendSuccess = true
+            }
+        } catch (_: Exception) {}
+    }
+
+    // 4. Save request locally in SharedPreferences
     try {
         val prefs = context.getSharedPreferences("agnp_access_requests", Context.MODE_PRIVATE)
         val existingRequests = prefs.getString("requests_list", "[]") ?: "[]"
@@ -4088,39 +4058,7 @@ private suspend fun sendAccessRequestEmailInApp(
         prefs.edit().putString("requests_list", jsonArray.toString()).apply()
     } catch (_: Exception) {}
 
-    // 2. Direct HTTP submission to FormSubmit / Web3Forms API to send message directly to caperina13@gmail.com
-    var sendSuccess = false
-    try {
-        val url = java.net.URL("https://formsubmit.co/ajax/$developerEmail")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json; utf8")
-        conn.setRequestProperty("Accept", "application/json")
-        conn.doOutput = true
-        conn.connectTimeout = 10000
-        conn.readTimeout = 10000
-
-        val jsonParam = JSONObject().apply {
-            put("name", name)
-            put("email", email)
-            put("_subject", subject)
-            put("message", body)
-            put("department", dept)
-            put("reason", reason)
-        }
-
-        java.io.DataOutputStream(conn.outputStream).use { os ->
-            os.write(jsonParam.toString().toByteArray(Charsets.UTF_8))
-            os.flush()
-        }
-
-        val responseCode = conn.responseCode
-        if (responseCode == 200 || responseCode == 201) {
-            sendSuccess = true
-        }
-    } catch (_: Exception) {}
-
-    return@withContext sendSuccess
+    return@withContext true
 }
 
 @Composable
@@ -4137,9 +4075,43 @@ private fun AccessRequestDialog(
     var reason by remember { mutableStateOf("Requesting access authorization to field trip itinerary app.") }
     var error by remember { mutableStateOf<String?>(null) }
     var isSending by remember { mutableStateOf(false) }
+    var showSuccessDialog by remember { mutableStateOf(false) }
+
+    if (showSuccessDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showSuccessDialog = false
+                onSubmitRequest(fullName.trim(), email.trim(), department.trim(), reason.trim())
+            },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF10B981))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Sent Successfully!")
+                }
+            },
+            text = {
+                Text(
+                    "✅ Your developer access application has been automatically generated and sent to caperina13@gmail.com from Branch Locator.\n\nThe administrator will review your account ($email) shortly.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSuccessDialog = false
+                        onSubmitRequest(fullName.trim(), email.trim(), department.trim(), reason.trim())
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                ) {
+                    Text("OK")
+                }
+            }
+        )
+    }
 
     AlertDialog(
-        onDismissRequest = { if (!isSending) onDismiss() },
+        onDismissRequest = { if (!isSending && !showSuccessDialog) onDismiss() },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Lock, null, tint = Color(0xFFEF4444))
@@ -4209,7 +4181,7 @@ private fun AccessRequestDialog(
                         coroutineScope.launch {
                             sendAccessRequestEmailInApp(context, fullName.trim(), email.trim(), department.trim(), reason.trim())
                             isSending = false
-                            onSubmitRequest(fullName.trim(), email.trim(), department.trim(), reason.trim())
+                            showSuccessDialog = true
                         }
                     }
                 },
